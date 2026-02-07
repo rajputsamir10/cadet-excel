@@ -1,15 +1,15 @@
 /**
  * CadetManager Component
  * Handles form submission, cadet management, and table display
+ * Now synced with Firebase Firestore for cloud persistence
  */
 
 import React, { useState, useEffect } from 'react';
-import { getCadets, addCadet, deleteCadet } from '../utils/localStorageHelpers';
-import { generateUniqueId } from '../utils/idGenerator';
+import { subscribeToCadets, addCadet, deleteCadet, generateUniqueId } from '../utils/firestoreCadetHelpers';
 import { exportToExcel } from '../utils/excelExport';
 import '../styles/CadetManager.css';
 
-const CadetManager = () => {
+const CadetManager = ({ onBack }) => {
   const [formData, setFormData] = useState({
     fullName: '',
     gender: 'Male',
@@ -26,11 +26,18 @@ const CadetManager = () => {
   const [selectedCadets, setSelectedCadets] = useState([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  // Load cadets from LocalStorage on component mount
+  // Subscribe to real-time cadet updates from Firestore
   useEffect(() => {
-    const loadedCadets = getCadets();
-    setCadets(loadedCadets);
+    setLoading(true);
+    const unsubscribe = subscribeToCadets((updatedCadets) => {
+      setCadets(updatedCadets);
+      setLoading(false);
+    });
+    
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
   }, []);
 
   // Handle form input changes
@@ -45,7 +52,7 @@ const CadetManager = () => {
   };
 
   // Handle form submission
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setSuccess('');
@@ -78,9 +85,8 @@ const CadetManager = () => {
         ...formData,
       };
 
-      // Add cadet and update state
-      const updatedCadets = addCadet(newCadet);
-      setCadets(updatedCadets);
+      // Add cadet to Firestore
+      await addCadet(newCadet);
       setSuccess(`Cadet ${newCadet.fullName} added with ID: ${uniqueId}`);
 
       // Reset form
@@ -121,24 +127,23 @@ const CadetManager = () => {
   };
 
   // Handle delete selected
-  const handleDeleteSelected = () => {
+  const handleDeleteSelected = async () => {
     if (selectedCadets.length === 0) {
       setError('Please select at least one cadet to delete');
       return;
     }
 
     if (window.confirm(`Delete ${selectedCadets.length} cadet(s)?`)) {
-      const updatedCadets = cadets.filter(
-        cadet => !selectedCadets.includes(cadet.uniqueId)
-      );
-      updatedCadets.forEach(cadet => {
-        if (!cadets.some(c => c.uniqueId === cadet.uniqueId)) {
-          deleteCadet(cadet.uniqueId);
+      try {
+        // Delete each selected cadet from Firestore
+        for (const cadetId of selectedCadets) {
+          await deleteCadet(cadetId);
         }
-      });
-      setCadets(updatedCadets);
-      setSelectedCadets([]);
-      setSuccess('Cadets deleted successfully');
+        setSelectedCadets([]);
+        setSuccess('Cadets deleted successfully');
+      } catch (err) {
+        setError('Error deleting cadets: ' + err.message);
+      }
     }
   };
 
@@ -160,6 +165,10 @@ const CadetManager = () => {
   return (
     <div className="cadet-manager">
       <h1>Cadet Management System</h1>
+
+      {onBack && (
+        <button className="btn-back" onClick={onBack}>← Back</button>
+      )}
 
       {/* Form Section */}
       <div className="form-section">
@@ -306,7 +315,11 @@ const CadetManager = () => {
           </div>
         </div>
 
-        {cadets.length > 0 ? (
+        {loading ? (
+          <div className="loading-state">
+            <p>Loading cadets from cloud...</p>
+          </div>
+        ) : cadets.length > 0 ? (
           <div className="table-wrapper">
             <table className="cadets-table">
               <thead>
