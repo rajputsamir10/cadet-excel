@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { subscribeToCadets, addCadet, deleteCadet, generateUniqueId } from '../utils/firestoreCadetHelpers';
+import { subscribeToCadets, addCadet, updateCadet, deleteCadet, generateUniqueId } from '../utils/firestoreCadetHelpers';
 import { exportToExcel } from '../utils/excelExport';
 import '../styles/CadetManager.css';
 
@@ -27,12 +27,26 @@ const CadetManager = ({ onBack }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
+  const [editMode, setEditMode] = useState(false);
+  const [editingRegimentalNumber, setEditingRegimentalNumber] = useState(null);
 
   // Subscribe to real-time cadet updates from Firestore
   useEffect(() => {
     setLoading(true);
     const unsubscribe = subscribeToCadets((updatedCadets) => {
-      setCadets(updatedCadets);
+      // CLEAN OLD DUPLICATES: Remove duplicates based on regimentalNumber
+      const uniqueCadets = [];
+      const seenRegNumbers = new Set();
+      
+      updatedCadets.forEach(cadet => {
+        // Keep only first occurrence of each regimental number
+        if (!seenRegNumbers.has(cadet.regimentalNumber)) {
+          seenRegNumbers.add(cadet.regimentalNumber);
+          uniqueCadets.push(cadet);
+        }
+      });
+      
+      setCadets(uniqueCadets);
       setLoading(false);
     });
     
@@ -51,7 +65,7 @@ const CadetManager = ({ onBack }) => {
     setSuccess('');
   };
 
-  // Handle form submission
+  // Handle form submission (Add or Edit)
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -76,18 +90,67 @@ const CadetManager = ({ onBack }) => {
     }
 
     try {
-      // Generate unique ID
-      const uniqueId = generateUniqueId(formData.gender, formData.regimentalNumber);
+      if (editMode) {
+        // EDIT MODE: Allow save only if regimentalNumber unchanged or new number doesn't exist
+        const regNumberChanged = editingRegimentalNumber !== formData.regimentalNumber;
+        
+        if (regNumberChanged) {
+          // Check if new regimental number already exists in OTHER records
+          const duplicateExists = cadets.find(
+            c => c.regimentalNumber === formData.regimentalNumber && 
+                 c.regimentalNumber !== editingRegimentalNumber
+          );
+          
+          if (duplicateExists) {
+            setError('Cadet with this Regimental Number already exists.');
+            return;
+          }
+        }
 
-      // Create cadet object
-      const newCadet = {
-        uniqueId,
-        ...formData,
-      };
+        // Find the cadet to update by original regimental number
+        const cadetToUpdate = cadets.find(c => c.regimentalNumber === editingRegimentalNumber);
+        if (!cadetToUpdate || !cadetToUpdate.id) {
+          setError('Cadet not found');
+          return;
+        }
 
-      // Add cadet to Firestore
-      await addCadet(newCadet);
-      setSuccess(`Cadet ${newCadet.fullName} added with ID: ${uniqueId}`);
+        // Generate new uniqueId if gender or regimentalNumber changed
+        const uniqueId = generateUniqueId(formData.gender, formData.regimentalNumber);
+
+        // Update cadet in Firestore
+        await updateCadet(cadetToUpdate.id, {
+          ...formData,
+          uniqueId,
+        });
+
+        setSuccess(`Cadet ${formData.fullName} updated successfully`);
+        setEditMode(false);
+        setEditingRegimentalNumber(null);
+      } else {
+        // ADD MODE: Check if regimentalNumber already exists
+        const duplicateByRegNumber = cadets.find(
+          c => c.regimentalNumber === formData.regimentalNumber
+        );
+        
+        // REGIMENTAL NUMBER MUST BE UNIQUE
+        if (duplicateByRegNumber) {
+          setError('Cadet with this Regimental Number already exists.');
+          return;
+        }
+
+        // Generate unique ID
+        const uniqueId = generateUniqueId(formData.gender, formData.regimentalNumber);
+
+        // Create cadet object
+        const newCadet = {
+          uniqueId,
+          ...formData,
+        };
+
+        // Add cadet to Firestore (Firebase auto-generates internal ID)
+        await addCadet(newCadet);
+        setSuccess(`Cadet ${newCadet.fullName} added with ID: ${uniqueId}`);
+      }
 
       // Reset form
       setFormData({
@@ -106,27 +169,71 @@ const CadetManager = ({ onBack }) => {
     }
   };
 
-  // Handle checkbox selection
-  const handleSelectCadet = (uniqueId) => {
+  // EDIT CADET: Load cadet data into form for editing
+  const handleEditCadet = (regimentalNumber) => {
+    const cadet = cadets.find(c => c.regimentalNumber === regimentalNumber);
+    if (cadet) {
+      setFormData({
+        fullName: cadet.fullName,
+        gender: cadet.gender,
+        regimentalNumber: cadet.regimentalNumber,
+        phone: cadet.phone,
+        email: cadet.email,
+        universityRollNumber: cadet.universityRollNumber || '',
+        department: cadet.department || '',
+        dateOfBirth: cadet.dateOfBirth || '',
+        fatherName: cadet.fatherName || '',
+      });
+      setEditMode(true);
+      setEditingRegimentalNumber(regimentalNumber);
+      setError('');
+      setSuccess('');
+      
+      // Scroll to form
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Cancel edit mode
+  const handleCancelEdit = () => {
+    setEditMode(false);
+    setEditingRegimentalNumber(null);
+    setFormData({
+      fullName: '',
+      gender: 'Male',
+      regimentalNumber: '',
+      phone: '',
+      email: '',
+      universityRollNumber: '',
+      department: '',
+      dateOfBirth: '',
+      fatherName: '',
+    });
+    setError('');
+    setSuccess('');
+  };
+
+  // USE REGIMENTAL NUMBER AS PRIMARY KEY: Handle checkbox selection
+  const handleSelectCadet = (regimentalNumber) => {
     setSelectedCadets(prev => {
-      if (prev.includes(uniqueId)) {
-        return prev.filter(id => id !== uniqueId);
+      if (prev.includes(regimentalNumber)) {
+        return prev.filter(num => num !== regimentalNumber);
       } else {
-        return [...prev, uniqueId];
+        return [...prev, regimentalNumber];
       }
     });
   };
 
-  // Handle select all
+  // Handle select all using regimentalNumber
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedCadets(cadets.map(c => c.uniqueId));
+      setSelectedCadets(cadets.map(c => c.regimentalNumber));
     } else {
       setSelectedCadets([]);
     }
   };
 
-  // Handle delete selected
+  // DELETE USING REGIMENTAL NUMBER: Delete selected cadets by regimentalNumber
   const handleDeleteSelected = async () => {
     if (selectedCadets.length === 0) {
       setError('Please select at least one cadet to delete');
@@ -135,9 +242,12 @@ const CadetManager = ({ onBack }) => {
 
     if (window.confirm(`Delete ${selectedCadets.length} cadet(s)?`)) {
       try {
-        // Delete each selected cadet from Firestore
-        for (const cadetId of selectedCadets) {
-          await deleteCadet(cadetId);
+        // Find Firebase IDs for selected regimental numbers and delete
+        for (const regimentalNumber of selectedCadets) {
+          const cadet = cadets.find(c => c.regimentalNumber === regimentalNumber);
+          if (cadet && cadet.id) {
+            await deleteCadet(cadet.id); // Delete from Firestore using Firebase ID
+          }
         }
         setSelectedCadets([]);
         setSuccess('Cadets deleted successfully');
@@ -152,13 +262,22 @@ const CadetManager = ({ onBack }) => {
     exportToExcel(cadets, selectedCadets);
   };
 
-  // Handle delete single cadet
-  const handleDeleteCadet = (uniqueId) => {
+  // DELETE USING REGIMENTAL NUMBER: Handle delete single cadet
+  const handleDeleteCadet = async (regimentalNumber) => {
     if (window.confirm('Delete this cadet?')) {
-      const updatedCadets = deleteCadet(uniqueId);
-      setCadets(updatedCadets);
-      setSelectedCadets(prev => prev.filter(id => id !== uniqueId));
-      setSuccess('Cadet deleted successfully');
+      try {
+        // Find the cadet by regimentalNumber to get Firebase ID
+        const cadet = cadets.find(c => c.regimentalNumber === regimentalNumber);
+        if (cadet && cadet.id) {
+          await deleteCadet(cadet.id); // Delete from Firestore using Firebase ID
+          setSelectedCadets(prev => prev.filter(num => num !== regimentalNumber));
+          setSuccess('Cadet deleted successfully');
+        } else {
+          setError('Cadet not found');
+        }
+      } catch (err) {
+        setError('Error deleting cadet: ' + err.message);
+      }
     }
   };
 
@@ -172,7 +291,12 @@ const CadetManager = ({ onBack }) => {
 
       {/* Form Section */}
       <div className="form-section">
-        <h2>Add New Cadet</h2>
+        <h2>{editMode ? 'Edit Cadet' : 'Add New Cadet'}</h2>
+        {editMode && (
+          <div className="alert alert-info" style={{marginBottom: '10px'}}>
+            Editing: {editingRegimentalNumber}
+          </div>
+        )}
 
         {error && <div className="alert alert-error">{error}</div>}
         {success && <div className="alert alert-success">{success}</div>}
@@ -285,9 +409,21 @@ const CadetManager = ({ onBack }) => {
             </div>
           </div>
 
-          <button type="submit" className="btn btn-primary">
-            Add Cadet
-          </button>
+          <div className="form-actions">
+            <button type="submit" className="btn btn-primary">
+              {editMode ? 'Update Cadet' : 'Add Cadet'}
+            </button>
+            {editMode && (
+              <button 
+                type="button" 
+                className="btn btn-secondary" 
+                onClick={handleCancelEdit}
+                style={{marginLeft: '10px'}}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
         </form>
       </div>
 
@@ -343,17 +479,18 @@ const CadetManager = ({ onBack }) => {
                   <th>Department</th>
                   <th>DOB</th>
                   <th>Father Name</th>
-                  <th>Action</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
+                {/* USE REGIMENTAL NUMBER AS PRIMARY KEY */}
                 {cadets.map(cadet => (
-                  <tr key={cadet.uniqueId}>
+                  <tr key={cadet.regimentalNumber}>
                     <td>
                       <input
                         type="checkbox"
-                        checked={selectedCadets.includes(cadet.uniqueId)}
-                        onChange={() => handleSelectCadet(cadet.uniqueId)}
+                        checked={selectedCadets.includes(cadet.regimentalNumber)}
+                        onChange={() => handleSelectCadet(cadet.regimentalNumber)}
                       />
                     </td>
                     <td className="bold">{cadet.uniqueId}</td>
@@ -367,8 +504,15 @@ const CadetManager = ({ onBack }) => {
                     <td>{cadet.fatherName}</td>
                     <td>
                       <button
+                        className="btn btn-sm btn-edit"
+                        onClick={() => handleEditCadet(cadet.regimentalNumber)}
+                        style={{marginRight: '5px'}}
+                      >
+                        Edit
+                      </button>
+                      <button
                         className="btn btn-sm btn-delete"
-                        onClick={() => handleDeleteCadet(cadet.uniqueId)}
+                        onClick={() => handleDeleteCadet(cadet.regimentalNumber)}
                       >
                         Delete
                       </button>

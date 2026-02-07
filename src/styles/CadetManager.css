@@ -59,6 +59,12 @@
   border-left: 4px solid #060;
 }
 
+.alert-info {
+  background-color: #e8f4f8;
+  color: #0077aa;
+  border-left: 4px solid #0077aa;
+}
+
 /* Form Section */
 .form-section {
   background: white;
@@ -162,6 +168,17 @@
 
 .btn-delete:hover {
   background-color: #c0392b;
+}
+
+.btn-edit {
+  background-color: #3498db;
+  color: white;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-edit:hover {
+  background-color: #2980b9;
 }
 
 .btn-sm {
